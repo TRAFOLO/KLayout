@@ -57,3 +57,8 @@ straight into TRAFOLO; its stack file comes along automatically.
 Questions and bug reports: open an issue in this repository, or contact TRAFOLO through
 [trafolo.eu](https://trafolo.eu). Please attach the layout and its `.trafolo.json` when reporting an
 import problem.
+
+## License
+
+The macro, the example layouts and the documentation are released under the [MIT License](LICENSE).
+TRAFOLO itself is commercial software with its own licence terms.
