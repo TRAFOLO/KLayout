@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "units": "um",
+  "source": "KLayout",
+  "layers": [
+    {
+      "layer": 1,
+      "datatype": 0,
+      "name": "M1_BOTTOM_CU",
+      "offset": 0.0,
+      "thickness": 10.0,
+      "role": "coil",
+      "enabled": true,
+      "color": [
+        255,
+        176,
+        96
+      ]
+    },
+    {
+      "layer": 2,
+      "datatype": 0,
+      "name": "VIA_CU",
+      "offset": 9.5,
+      "thickness": 16.0,
+      "role": "coil",
+      "enabled": true,
+      "color": [
+        192,
+        192,
+        192
+      ]
+    },
+    {
+      "layer": 4,
+      "datatype": 0,
+      "name": "AIR_BRIDGE_CU",
+      "offset": 25.0,
+      "thickness": 10.0,
+      "role": "coil",
+      "enabled": true,
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "layer": 10,
+      "datatype": 0,
+      "name": "MAG_CORE",
+      "offset": 12.0,
+      "thickness": 5.0,
+      "role": "core",
+      "enabled": true,
+      "color": [
+        128,
+        96,
+        192
+      ]
+    }
+  ]
+}

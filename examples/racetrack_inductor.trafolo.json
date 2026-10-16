@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "units": "um",
+  "source": "KLayout",
+  "layers": [
+    {
+      "layer": 1,
+      "datatype": 0,
+      "name": "M1_BOTTOM_CU",
+      "offset": 0.0,
+      "thickness": 10.0,
+      "role": "coil",
+      "enabled": true,
+      "color": [
+        255,
+        176,
+        96
+      ]
+    },
+    {
+      "layer": 10,
+      "datatype": 0,
+      "name": "MAG_CORE",
+      "offset": 15.0,
+      "thickness": 5.0,
+      "role": "core",
+      "enabled": true,
+      "color": [
+        128,
+        96,
+        192
+      ]
+    }
+  ]
+}

@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>TRAFOLO: export current layout with a 3D stackup sidecar</description>
+ <version>1.0</version>
+ <category>pymacros</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>true</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name/>
+ <menu-path/>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text># TRAFOLO integration for KLayout.
+# Adds a "TRAFOLO" menu with "Export for TRAFOLO...": writes the current layout as GDSII/OASIS together with a
+# `&lt;name&gt;.trafolo.json` stackup sidecar (per-layer offset, thickness, role) that TRAFOLO's CAD editor reads to
+# build 3D geometry in one click.
+import json
+import os
+
+import pya
+
+SIDECAR_SUFFIX = ".trafolo.json"
+STACKUP_VERSION = 1
+ROLES = ["coil", "core", "other", "bobbin", "skip"]
+PRESETS = [
+    ("PCB 2-layer, 1.6 mm, 35 um Cu", 2, 1.6, 0.035),
+    ("PCB 2-layer, 1.6 mm, 70 um Cu", 2, 1.6, 0.070),
+    ("PCB 4-layer, 1.6 mm, 35 um Cu", 4, 1.6, 0.035),
+    ("PCB 4-layer, 1.6 mm, 70 um Cu", 4, 1.6, 0.070),
+    ("PCB 6-layer, 1.6 mm, 35 um Cu", 6, 1.6, 0.035),
+]
+COLUMNS = ["Export", "Layer", "Name", "Role", "Offset [mm]", "Thickness [mm]"]
+COL_ENABLED, COL_LAYER, COL_NAME, COL_ROLE, COL_OFFSET, COL_THICKNESS = range(6)
+
+
+def preset_offsets(copper_layers, board_thickness, copper_thickness):
+    if copper_layers == 1:
+        return [0.0]
+    pitch = (board_thickness - copper_thickness) / (copper_layers - 1)
+    return [-index * pitch for index in range(copper_layers)]
+
+
+def guess_role(name):
+    lowered = (name or "").lower()
+    for keyword, role in (("core", "core"), ("ferrite", "core"), ("bobbin", "bobbin"), ("board", "other"),
+                          ("pcb", "other"), ("fr4", "other"), ("outline", "skip"), ("text", "skip")):
+        if keyword in lowered:
+            return role
+    return "coil"
+
+
+def color_to_rgb(color):
+    if color is None or color &lt; 0:
+        return None
+    return [(color &gt;&gt; 16) &amp; 255, (color &gt;&gt; 8) &amp; 255, color &amp; 255]
+
+
+def collect_layers(view):
+    """Layers of the active layout; names and colours are taken from the layer panel when available."""
+    layout = view.active_cellview().layout()
+    rows = {}
+    for lp in view.each_layer():
+        if lp.has_children() or lp.source_layer &lt; 0:
+            continue
+        key = (lp.source_layer, lp.source_datatype)
+        if key in rows:
+            continue
+        rows[key] = {"layer": key[0], "datatype": key[1], "name": lp.name or "",
+                     "color": color_to_rgb(lp.eff_fill_color(True))}
+    for layer_index in layout.layer_indexes():
+        info = layout.get_info(layer_index)
+        key = (info.layer, info.datatype)
+        if key not in rows:
+            rows[key] = {"layer": key[0], "datatype": key[1], "name": info.name or "", "color": None}
+        if not any(not layout.cell(ci).shapes(layer_index).is_empty() for ci in layout.each_cell_top_down()):
+            rows[key]["empty"] = True
+    return [rows[key] for key in sorted(rows)]
+
+
+def build_stackup(rows, source):
+    return {
+        "version": STACKUP_VERSION,
+        "units": "mm",
+        "source": source,
+        "layers": [
+            {
+                "layer": row["layer"],
+                "datatype": row["datatype"],
+                "name": row["name"] or None,
+                "offset": row["offset"],
+                "thickness": row["thickness"],
+                "enabled": row["enabled"],
+                "role": row["role"],
+                "color": row.get("color"),
+            }
+            for row in rows if row["role"] != "skip"
+        ],
+    }
+
+
+class ExportDialog(pya.QDialog):
+
+    def __init__(self, view, parent=None):
+        super(ExportDialog, self).__init__(parent)
+        self.view = view
+        self.rows = [row for row in collect_layers(view) if not row.get("empty")]
+        self.setWindowTitle("Export for TRAFOLO")
+        self.resize(760, 420)
+
+        layout = pya.QVBoxLayout(self)
+        hint = pya.QLabel("Assign each drawing layer a 3D role, vertical offset and thickness (TRAFOLO Y axis). "
+                          "Layers with role 'skip' are not written to the stackup.", self)
+        hint.wordWrap = True
+        layout.addWidget(hint)
+
+        preset_row = pya.QHBoxLayout()
+        preset_row.addWidget(pya.QLabel("PCB stackup preset:", self))
+        self.preset_combo = pya.QComboBox(self)
+        for preset in PRESETS:
+            self.preset_combo.addItem(preset[0])
+        self.preset_combo.setCurrentIndex(2)
+        preset_row.addWidget(self.preset_combo, 1)
+        apply_button = pya.QPushButton("Apply to coil layers", self)
+        apply_button.clicked = self.apply_preset
+        preset_row.addWidget(apply_button)
+        layout.addLayout(preset_row)
+
+        self.table = pya.QTableWidget(len(self.rows), len(COLUMNS), self)
+        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.table.horizontalHeader.setStretchLastSection(True)
+        for index, row in enumerate(self.rows):
+            self._fill_row(index, row)
+        layout.addWidget(self.table, 1)
+
+        out_row = pya.QHBoxLayout()
+        out_row.addWidget(pya.QLabel("Output:", self))
+        self.path_edit = pya.QLineEdit(self._default_output(), self)
+        out_row.addWidget(self.path_edit, 1)
+        browse = pya.QPushButton("...", self)
+        browse.clicked = self.browse
+        out_row.addWidget(browse)
+        self.format_combo = pya.QComboBox(self)
+        self.format_combo.addItem("GDSII (.gds)")
+        self.format_combo.addItem("OASIS (.oas)")
+        self.format_combo.currentIndexChanged = self.on_format_changed
+        out_row.addWidget(self.format_combo)
+        layout.addLayout(out_row)
+
+        self.open_folder_check = pya.QCheckBox("Open output folder after export", self)
+        self.open_folder_check.checked = True
+        layout.addWidget(self.open_folder_check)
+
+        buttons = pya.QHBoxLayout()
+        buttons.addStretch(1)
+        export_button = pya.QPushButton("Export", self)
+        export_button.default = True
+        export_button.clicked = self.export
+        cancel_button = pya.QPushButton("Cancel", self)
+        cancel_button.clicked = self.reject
+        buttons.addWidget(export_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+        self.apply_preset()
+
+    def _default_output(self):
+        cellview = self.view.active_cellview()
+        source = cellview.filename() or ""
+        directory = os.path.dirname(source) if source else os.path.expanduser("~")
+        stem = os.path.splitext(os.path.basename(source))[0] if source else (cellview.cell.name if cellview.cell else "layout")
+        return os.path.join(directory, stem + "_trafolo.gds")
+
+    def _fill_row(self, index, row):
+        enabled = pya.QTableWidgetItem("")
+        enabled.setFlags(pya.Qt.ItemIsUserCheckable | pya.Qt.ItemIsEnabled)
+        enabled.setCheckState(pya.Qt.Checked)
+        self.table.setItem(index, COL_ENABLED, enabled)
+        layer_item = pya.QTableWidgetItem("%d/%d" % (row["layer"], row["datatype"]))
+        layer_item.setFlags(pya.Qt.ItemIsEnabled)
+        self.table.setItem(index, COL_LAYER, layer_item)
+        self.table.setItem(index, COL_NAME, pya.QTableWidgetItem(row["name"]))
+        role = pya.QComboBox(self.table)
+        for name in ROLES:
+            role.addItem(name)
+        role.setCurrentIndex(ROLES.index(row.get("role") or guess_role(row["name"])))
+        self.table.setCellWidget(index, COL_ROLE, role)
+        for column, value in ((COL_OFFSET, 0.0), (COL_THICKNESS, 0.0)):
+            spin = pya.QDoubleSpinBox(self.table)
+            spin.setDecimals(4)
+            spin.setRange(-1000.0, 1000.0)
+            spin.setSingleStep(0.005)
+            spin.value = value
+            self.table.setCellWidget(index, column, spin)
+
+    def _row_values(self, index):
+        row = dict(self.rows[index])
+        row["enabled"] = self.table.item(index, COL_ENABLED).checkState == pya.Qt.Checked
+        row["name"] = self.table.item(index, COL_NAME).text
+        row["role"] = self.table.cellWidget(index, COL_ROLE).currentText
+        row["offset"] = self.table.cellWidget(index, COL_OFFSET).value
+        row["thickness"] = self.table.cellWidget(index, COL_THICKNESS).value
+        return row
+
+    def apply_preset(self):
+        _, copper_layers, board, copper = PRESETS[self.preset_combo.currentIndex]
+        coil_rows = [index for index in range(len(self.rows))
+                     if self.table.cellWidget(index, COL_ROLE).currentText == "coil"]
+        for index, offset in zip(coil_rows, preset_offsets(copper_layers, board, copper)):
+            self.table.cellWidget(index, COL_OFFSET).value = offset
+            self.table.cellWidget(index, COL_THICKNESS).value = copper
+
+    def on_format_changed(self, index):
+        stem = os.path.splitext(self.path_edit.text)[0]
+        self.path_edit.text = stem + (".oas" if index == 1 else ".gds")
+
+    def browse(self):
+        path = pya.QFileDialog.getSaveFileName(self, "Export for TRAFOLO", self.path_edit.text,
+                                               "GDSII (*.gds);;OASIS (*.oas)")
+        if path:
+            self.path_edit.text = path
+            self.format_combo.setCurrentIndex(1 if path.lower().endswith(".oas") else 0)
+
+    def export(self):
+        path = self.path_edit.text
+        if not path:
+            pya.QMessageBox.warning(self, "Export for TRAFOLO", "Please choose an output file.")
+            return
+        rows = [self._row_values(index) for index in range(len(self.rows))]
+        layout = self.view.active_cellview().layout()
+        for row in rows:
+            for layer_index in layout.layer_indexes():
+                info = layout.get_info(layer_index)
+                if (info.layer, info.datatype) == (row["layer"], row["datatype"]) and row["name"]:
+                    layout.set_info(layer_index, pya.LayerInfo(info.layer, info.datatype, row["name"]))
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        layout.write(path)
+        sidecar = os.path.splitext(path)[0] + SIDECAR_SUFFIX
+        with open(sidecar, "w") as handle:
+            json.dump(build_stackup(rows, pya.Application.instance().version()), handle, indent=2)
+        if self.open_folder_check.checked:
+            os.startfile(os.path.dirname(os.path.abspath(path)))
+        pya.QMessageBox.information(
+            self, "Export for TRAFOLO",
+            "Written:\n%s\n%s\n\nIn TRAFOLO: CAD editor -&gt; Import -&gt; select the layout file. "
+            "The stackup is applied automatically." % (path, sidecar))
+        self.accept()
+
+
+class TrafoloExportAction(pya.Action):
+
+    def __init__(self):
+        super(TrafoloExportAction, self).__init__()
+        self.title = "Export for TRAFOLO..."
+        self.tool_tip = "Write GDSII/OASIS plus a 3D stackup sidecar for TRAFOLO"
+
+    def triggered(self):
+        view = pya.Application.instance().main_window().current_view()
+        if view is None or view.active_cellview() is None or not view.active_cellview().is_valid():
+            pya.QMessageBox.warning(pya.Application.instance().main_window(), "Export for TRAFOLO",
+                                    "Open a layout first.")
+            return
+        ExportDialog(view, pya.Application.instance().main_window()).exec_()
+
+
+class TrafoloDocsAction(pya.Action):
+
+    def __init__(self):
+        super(TrafoloDocsAction, self).__init__()
+        self.title = "TRAFOLO documentation"
+
+    def triggered(self):
+        pya.QDesktopServices.openUrl(pya.QUrl("https://trafolo.eu/documentation/intro/"))
+
+
+def install_menu():
+    main_window = pya.Application.instance().main_window()
+    if main_window is None:
+        return
+    menu = main_window.menu()
+    if not menu.is_menu("trafolo_menu"):
+        menu.insert_menu("help_menu", "trafolo_menu", "TRAFOLO")
+    global TRAFOLO_ACTIONS
+    TRAFOLO_ACTIONS = [TrafoloExportAction(), TrafoloDocsAction()]
+    menu.insert_item("trafolo_menu.end", "trafolo_export", TRAFOLO_ACTIONS[0])
+    menu.insert_item("trafolo_menu.end", "trafolo_docs", TRAFOLO_ACTIONS[1])
+
+
+install_menu()
+</text>
+</klayout-macro>
